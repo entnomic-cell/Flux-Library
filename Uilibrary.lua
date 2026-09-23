@@ -1,28 +1,34 @@
 --[[
-	ModernUI - A clean, modern Roblox UI library with vertical tabs.
+	ModernUI v2 - A clean, dark/purple Roblox UI library with vertical tabs,
+	accent theming, a settings panel, minimize/close controls, a global
+	show/hide keybind, and per-toggle keybinds.
 
 	USAGE:
 		local Library = loadstring(game:HttpGet("PATH_TO_THIS_FILE"))()
 
 		local Window = Library:CreateWindow({
-			Title    = "My Hub",
-			SubTitle = "v1.0.0",
+			Title         = "My Hub",
+			SubTitle      = "v2.0.0",
+			Icon          = "rbxassetid://0",      -- optional, shown left of title
+			Accent        = "Purple",              -- "Purple" | "Blue" | "Pink" | "Green" | "Red" | Color3
+			ToggleKeybind = Enum.KeyCode.Insert,   -- shows/hides the whole window
 		})
 
-		local Tab = Window:AddTab("Home", "rbxassetid://0") -- icon id optional
+		local Tab = Window:AddTab("Home", "rbxassetid://0")
 
 		Tab:AddLabel("Section Title")
 		Tab:AddButton("Click Me", function() print("clicked") end)
-		Tab:AddToggle("Enable Thing", false, function(state) print(state) end)
+		Tab:AddToggle("Enable Thing", false, function(state) print(state) end, Enum.KeyCode.G)
 		Tab:AddSlider("Speed", 0, 100, 16, function(value) print(value) end)
 		Tab:AddDropdown("Mode", {"A","B","C"}, "A", function(choice) print(choice) end)
-		Tab:AddKeybind("Toggle UI", Enum.KeyCode.RightShift, function() print("bound") end)
+		Tab:AddKeybind("Toggle Feature", Enum.KeyCode.RightShift, function() print("bound") end)
 
 		Library:Notify("Loaded", "Everything initialized correctly.", 4)
 
-	This file only implements generic UI building blocks (window, tabs,
-	toggles, sliders, dropdowns, buttons, keybinds, notifications). It has
-	no game-specific logic — wire up your own callbacks per control.
+	The gear icon (top bar, next to minimize/close) opens a built-in
+	Settings panel where the user can pick an accent color, rebind the
+	menu's show/hide key, and adjust UI transparency — no extra code
+	required on your end.
 --]]
 
 local TweenService = game:GetService("TweenService")
@@ -35,16 +41,24 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -------------------------------------------------
 -- THEME
 -------------------------------------------------
+local AccentPresets = {
+	Purple = Color3.fromRGB(168, 85, 247),
+	Blue   = Color3.fromRGB(90, 130, 255),
+	Pink   = Color3.fromRGB(255, 90, 190),
+	Green  = Color3.fromRGB(80, 220, 140),
+	Red    = Color3.fromRGB(255, 90, 90),
+}
+
 local Theme = {
-	Background   = Color3.fromRGB(24, 24, 28),
-	Sidebar      = Color3.fromRGB(20, 20, 24),
-	Surface      = Color3.fromRGB(32, 32, 38),
-	SurfaceLight = Color3.fromRGB(40, 40, 47),
-	Accent       = Color3.fromRGB(114, 137, 255),
-	AccentDim    = Color3.fromRGB(80, 96, 190),
-	Text         = Color3.fromRGB(235, 235, 240),
-	SubText      = Color3.fromRGB(150, 150, 160),
-	Stroke       = Color3.fromRGB(50, 50, 58),
+	Background   = Color3.fromRGB(13, 13, 17),
+	Sidebar      = Color3.fromRGB(10, 10, 14),
+	Surface      = Color3.fromRGB(20, 20, 26),
+	SurfaceLight = Color3.fromRGB(29, 29, 37),
+	Accent       = AccentPresets.Purple,
+	AccentDim    = Color3.fromRGB(110, 55, 165),
+	Text         = Color3.fromRGB(245, 245, 250),
+	SubText      = Color3.fromRGB(150, 150, 165),
+	Stroke       = Color3.fromRGB(42, 42, 52),
 	Font         = Enum.Font.GothamMedium,
 	FontBold     = Enum.Font.GothamBold,
 }
@@ -91,6 +105,27 @@ local function make(class, props, parent)
 end
 
 -------------------------------------------------
+-- ACCENT REGISTRY (so accent color can be live-swapped)
+-------------------------------------------------
+local AccentRegistry = {} -- { {inst=Instance, prop="BackgroundColor3"} , ... }
+
+local function registerAccent(inst, prop)
+	table.insert(AccentRegistry, {inst = inst, prop = prop})
+	inst[prop] = Theme.Accent
+	return inst
+end
+
+local function applyAccent(color)
+	Theme.Accent = color
+	Theme.AccentDim = Color3.new(color.R * 0.65, color.G * 0.65, color.B * 0.65)
+	for _, entry in ipairs(AccentRegistry) do
+		if entry.inst and entry.inst.Parent then
+			tween(entry.inst, {[entry.prop] = color}, 0.2)
+		end
+	end
+end
+
+-------------------------------------------------
 -- DRAGGABLE
 -------------------------------------------------
 local function makeDraggable(dragHandle, target)
@@ -123,19 +158,68 @@ local function makeDraggable(dragHandle, target)
 end
 
 -------------------------------------------------
+-- SMALL KEYBIND CAPTURE BUTTON (reused by toggles, keybinds, settings panel)
+-------------------------------------------------
+local function makeKeyCaptureButton(parent, size, initialKey, onChanged)
+	local Btn = make("TextButton", {
+		Text = initialKey and initialKey.Name or "None",
+		Font = Theme.Font,
+		TextSize = 11,
+		TextColor3 = Theme.Text,
+		BackgroundColor3 = Theme.SurfaceLight,
+		AutoButtonColor = false,
+		Size = size,
+	}, parent)
+	corner(Btn, 6)
+
+	local listening = false
+	Btn.MouseButton1Click:Connect(function()
+		if listening then return end
+		listening = true
+		Btn.Text = "..."
+		local conn
+		conn = UserInputService.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.Keyboard then
+				initialKey = input.KeyCode
+				Btn.Text = initialKey.Name
+				listening = false
+				conn:Disconnect()
+				onChanged(initialKey)
+			end
+		end)
+	end)
+
+	return Btn, function() return initialKey end
+end
+
+-------------------------------------------------
 -- LIBRARY
 -------------------------------------------------
 local Library = {}
 Library.__index = Library
 
+function Library:SetAccentColor(color)
+	if typeof(color) == "string" then
+		color = AccentPresets[color] or Theme.Accent
+	end
+	applyAccent(color)
+end
+
 function Library:CreateWindow(config)
 	config = config or {}
 	local title = config.Title or "Modern UI"
 	local subtitle = config.SubTitle or ""
+	local menuKeybind = config.ToggleKeybind or Enum.KeyCode.Insert
+
+	if config.Accent then
+		local a = config.Accent
+		Theme.Accent = (typeof(a) == "string") and (AccentPresets[a] or Theme.Accent) or a
+	end
 
 	-- Remove old instance if re-executed
 	local existing = PlayerGui:FindFirstChild("ModernUI_ScreenGui")
 	if existing then existing:Destroy() end
+	AccentRegistry = {}
 
 	local ScreenGui = make("ScreenGui", {
 		Name = "ModernUI_ScreenGui",
@@ -145,10 +229,11 @@ function Library:CreateWindow(config)
 
 	local Main = make("Frame", {
 		Name = "Main",
-		Size = UDim2.fromOffset(620, 400),
-		Position = UDim2.new(0.5, -310, 0.5, -200),
+		Size = UDim2.fromOffset(640, 400),
+		Position = UDim2.new(0.5, -320, 0.5, -200),
 		BackgroundColor3 = Theme.Background,
 		BorderSizePixel = 0,
+		ClipsDescendants = true,
 	}, ScreenGui)
 	corner(Main, 12)
 	stroke(Main, Theme.Stroke, 1)
@@ -159,16 +244,30 @@ function Library:CreateWindow(config)
 		Size = UDim2.new(1, 0, 0, 46),
 		BackgroundColor3 = Theme.Sidebar,
 		BorderSizePixel = 0,
+		ZIndex = 5,
 	}, Main)
 	corner(TopBar, 12)
-	-- mask bottom corners of topbar square
 	make("Frame", {
 		Size = UDim2.new(1, 0, 0, 12),
 		Position = UDim2.new(0, 0, 1, -12),
 		BackgroundColor3 = Theme.Sidebar,
 		BorderSizePixel = 0,
-		ZIndex = 0,
+		ZIndex = 4,
 	}, TopBar)
+
+	local titleOffset = 16
+	if config.Icon and config.Icon ~= "" then
+		local IconImg = make("ImageLabel", {
+			Image = config.Icon,
+			Size = UDim2.fromOffset(20, 20),
+			Position = UDim2.fromOffset(16, 13),
+			BackgroundTransparency = 1,
+			ImageColor3 = Theme.Accent,
+			ZIndex = 5,
+		}, TopBar)
+		registerAccent(IconImg, "ImageColor3")
+		titleOffset = 44
+	end
 
 	make("TextLabel", {
 		Text = title,
@@ -176,9 +275,10 @@ function Library:CreateWindow(config)
 		TextSize = 15,
 		TextColor3 = Theme.Text,
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(16, 0),
-		Size = UDim2.new(0, 260, 1, 0),
+		Position = UDim2.fromOffset(titleOffset, 0),
+		Size = UDim2.new(0, 240, 1, 0),
 		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 5,
 	}, TopBar)
 
 	make("TextLabel", {
@@ -187,27 +287,32 @@ function Library:CreateWindow(config)
 		TextSize = 12,
 		TextColor3 = Theme.SubText,
 		BackgroundTransparency = 1,
-		Position = UDim2.new(1, -140, 0, 0),
-		Size = UDim2.new(0, 120, 1, 0),
+		Position = UDim2.new(1, -220, 0, 0),
+		Size = UDim2.new(0, 100, 1, 0),
 		TextXAlignment = Enum.TextXAlignment.Right,
+		ZIndex = 5,
 	}, TopBar)
 
-	local CloseBtn = make("TextButton", {
-		Text = "×",
-		Font = Theme.FontBold,
-		TextSize = 20,
-		TextColor3 = Theme.SubText,
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(36, 36),
-		Position = UDim2.new(1, -40, 0, 5),
-	}, TopBar)
-	CloseBtn.MouseEnter:Connect(function() tween(CloseBtn, {TextColor3 = Theme.Text}, 0.12) end)
-	CloseBtn.MouseLeave:Connect(function() tween(CloseBtn, {TextColor3 = Theme.SubText}, 0.12) end)
-	CloseBtn.MouseButton1Click:Connect(function()
-		tween(Main, {Size = UDim2.fromOffset(Main.Size.X.Offset, 0)}, 0.2)
-		task.wait(0.2)
-		ScreenGui.Enabled = false
-	end)
+	-- Window control cluster: Settings gear, Minimize, Close
+	local function topBarIconButton(text, xOffset, textSize)
+		local Btn = make("TextButton", {
+			Text = text,
+			Font = Theme.FontBold,
+			TextSize = textSize or 16,
+			TextColor3 = Theme.SubText,
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(32, 32),
+			Position = UDim2.new(1, xOffset, 0, 7),
+			ZIndex = 5,
+		}, TopBar)
+		Btn.MouseEnter:Connect(function() tween(Btn, {TextColor3 = Theme.Text}, 0.12) end)
+		Btn.MouseLeave:Connect(function() tween(Btn, {TextColor3 = Theme.SubText}, 0.12) end)
+		return Btn
+	end
+
+	local CloseBtn = topBarIconButton("×", -40, 20)
+	local MinimizeBtn = topBarIconButton("—", -72, 13)
+	local GearBtn = topBarIconButton("⚙", -104, 15)
 
 	makeDraggable(TopBar, Main)
 
@@ -238,7 +343,8 @@ function Library:CreateWindow(config)
 		CanvasSize = UDim2.new(0, 0, 0, 0),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 	}, Sidebar)
-	local TabListLayout = make("UIListLayout", {
+	registerAccent(TabList, "ScrollBarImageColor3")
+	make("UIListLayout", {
 		Padding = UDim.new(0, 4),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, TabList)
@@ -252,6 +358,213 @@ function Library:CreateWindow(config)
 		BackgroundColor3 = Theme.Background,
 		BorderSizePixel = 0,
 	}, Main)
+
+	------------------------------------------------------
+	-- SETTINGS PANEL (opened by the gear icon)
+	------------------------------------------------------
+	local SettingsPanel = make("Frame", {
+		Name = "SettingsPanel",
+		Size = UDim2.fromOffset(240, 0),
+		Position = UDim2.new(1, -252, 0, 52),
+		BackgroundColor3 = Theme.Surface,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		Visible = false,
+		ZIndex = 10,
+	}, Main)
+	corner(SettingsPanel, 10)
+	stroke(SettingsPanel, Theme.Stroke, 1)
+	padding(SettingsPanel, 14)
+
+	make("UIListLayout", {
+		Padding = UDim.new(0, 12),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, SettingsPanel)
+
+	make("TextLabel", {
+		Text = "Accent Color",
+		Font = Theme.FontBold,
+		TextSize = 12,
+		TextColor3 = Theme.SubText,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 14),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = 1,
+		ZIndex = 10,
+	}, SettingsPanel)
+
+	local SwatchRow = make("Frame", {
+		Size = UDim2.new(1, 0, 0, 24),
+		BackgroundTransparency = 1,
+		LayoutOrder = 2,
+		ZIndex = 10,
+	}, SettingsPanel)
+	make("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, SwatchRow)
+
+	local orderedPresets = {"Purple", "Blue", "Pink", "Green", "Red"}
+	for i, name in ipairs(orderedPresets) do
+		local color = AccentPresets[name]
+		local Swatch = make("TextButton", {
+			Text = "",
+			Size = UDim2.fromOffset(24, 24),
+			BackgroundColor3 = color,
+			AutoButtonColor = false,
+			LayoutOrder = i,
+			ZIndex = 10,
+		}, SwatchRow)
+		corner(Swatch, 12)
+		stroke(Swatch, Theme.Stroke, 1)
+		Swatch.MouseButton1Click:Connect(function()
+			Library:SetAccentColor(color)
+		end)
+	end
+
+	make("TextLabel", {
+		Text = "Menu Keybind",
+		Font = Theme.FontBold,
+		TextSize = 12,
+		TextColor3 = Theme.SubText,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 14),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = 3,
+		ZIndex = 10,
+	}, SettingsPanel)
+
+	local KeybindRow = make("Frame", {
+		Size = UDim2.new(1, 0, 0, 28),
+		BackgroundTransparency = 1,
+		LayoutOrder = 4,
+		ZIndex = 10,
+	}, SettingsPanel)
+	make("TextLabel", {
+		Text = "Show / Hide UI",
+		Font = Theme.Font,
+		TextSize = 12,
+		TextColor3 = Theme.Text,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -80, 1, 0),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 10,
+	}, KeybindRow)
+	local keyBtn = makeKeyCaptureButton(
+		KeybindRow,
+		UDim2.new(0, 76, 0, 26),
+		menuKeybind,
+		function(newKey) menuKeybind = newKey end
+	)
+	keyBtn.Position = UDim2.new(1, -76, 0, 1)
+	keyBtn.ZIndex = 10
+
+	make("TextLabel", {
+		Text = "UI Transparency",
+		Font = Theme.FontBold,
+		TextSize = 12,
+		TextColor3 = Theme.SubText,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 14),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = 5,
+		ZIndex = 10,
+	}, SettingsPanel)
+
+	local TransTrack = make("Frame", {
+		Size = UDim2.new(1, 0, 0, 6),
+		BackgroundColor3 = Theme.SurfaceLight,
+		LayoutOrder = 6,
+		ZIndex = 10,
+	}, SettingsPanel)
+	corner(TransTrack, 3)
+	local TransFill = make("Frame", {
+		Size = UDim2.new(0, 0, 1, 0),
+		BackgroundColor3 = Theme.Accent,
+		ZIndex = 10,
+	}, TransTrack)
+	corner(TransFill, 3)
+	registerAccent(TransFill, "BackgroundColor3")
+
+	local transDragging = false
+	local function updateTrans(xPos)
+		local rel = math.clamp((xPos - TransTrack.AbsolutePosition.X) / TransTrack.AbsoluteSize.X, 0, 0.6)
+		TransFill.Size = UDim2.new(rel / 0.6, 0, 1, 0)
+		Main.BackgroundTransparency = rel
+		TopBar.BackgroundTransparency = rel
+		Sidebar.BackgroundTransparency = rel
+		Content.BackgroundTransparency = rel
+	end
+	TransTrack.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			transDragging = true
+			updateTrans(input.Position.X)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			transDragging = false
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if transDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			updateTrans(input.Position.X)
+		end
+	end)
+
+	local settingsOpen = false
+	GearBtn.MouseButton1Click:Connect(function()
+		settingsOpen = not settingsOpen
+		if settingsOpen then
+			SettingsPanel.Visible = true
+			SettingsPanel.AutomaticSize = Enum.AutomaticSize.Y
+			tween(SettingsPanel, {BackgroundTransparency = 0}, 0.15)
+		else
+			SettingsPanel.AutomaticSize = Enum.AutomaticSize.None
+			tween(SettingsPanel, {Size = UDim2.new(0, 240, 0, 0)}, 0.15)
+			task.delay(0.15, function()
+				if not settingsOpen then SettingsPanel.Visible = false end
+			end)
+		end
+	end)
+
+	------------------------------------------------------
+	-- MINIMIZE
+	------------------------------------------------------
+	local minimized = false
+	local fullHeight = Main.Size.Y.Offset
+	MinimizeBtn.MouseButton1Click:Connect(function()
+		minimized = not minimized
+		if minimized then
+			SettingsPanel.Visible = false
+			settingsOpen = false
+			tween(Main, {Size = UDim2.new(Main.Size.X.Scale, Main.Size.X.Offset, 0, 46)}, 0.2)
+			MinimizeBtn.Text = "▢"
+		else
+			tween(Main, {Size = UDim2.new(Main.Size.X.Scale, Main.Size.X.Offset, 0, fullHeight)}, 0.2)
+			MinimizeBtn.Text = "—"
+		end
+	end)
+
+	------------------------------------------------------
+	-- CLOSE
+	------------------------------------------------------
+	CloseBtn.MouseButton1Click:Connect(function()
+		tween(Main, {Size = UDim2.new(Main.Size.X.Scale, Main.Size.X.Offset, 0, 0)}, 0.2)
+		task.wait(0.2)
+		ScreenGui.Enabled = false
+	end)
+
+	------------------------------------------------------
+	-- GLOBAL SHOW/HIDE KEYBIND
+	------------------------------------------------------
+	UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+		if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == menuKeybind then
+			Main.Visible = not Main.Visible
+		end
+	end)
 
 	local Window = setmetatable({
 		ScreenGui = ScreenGui,
@@ -277,13 +590,14 @@ function Library.WindowMethods:AddTab(name, iconId)
 	local TabButton = make("TextButton", {
 		Name = name .. "Tab",
 		Size = UDim2.new(1, 0, 0, 34),
-		BackgroundColor3 = Theme.Surface,
+		BackgroundColor3 = Theme.Accent,
 		BackgroundTransparency = 1,
 		AutoButtonColor = false,
 		Text = "",
 		LayoutOrder = order,
 	}, self_.TabList)
 	corner(TabButton, 8)
+	registerAccent(TabButton, "BackgroundColor3")
 
 	local Indicator = make("Frame", {
 		Size = UDim2.new(0, 3, 0, 16),
@@ -293,6 +607,7 @@ function Library.WindowMethods:AddTab(name, iconId)
 		BorderSizePixel = 0,
 	}, TabButton)
 	corner(Indicator, 2)
+	registerAccent(Indicator, "BackgroundColor3")
 
 	if iconId and iconId ~= "" then
 		make("ImageLabel", {
@@ -327,8 +642,9 @@ function Library.WindowMethods:AddTab(name, iconId)
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		Visible = order == 1,
 	}, self_.Content)
+	registerAccent(Page, "ScrollBarImageColor3")
 	padding(Page, 16)
-	local PageLayout = make("UIListLayout", {
+	make("UIListLayout", {
 		Padding = UDim.new(0, 10),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, Page)
@@ -372,7 +688,7 @@ end
 Library.TabMethods = {}
 
 function Library.TabMethods:AddLabel(text)
-	local Label = make("TextLabel", {
+	return make("TextLabel", {
 		Text = text,
 		Font = Theme.FontBold,
 		TextSize = 13,
@@ -381,7 +697,6 @@ function Library.TabMethods:AddLabel(text)
 		Size = UDim2.new(1, 0, 0, 20),
 		TextXAlignment = Enum.TextXAlignment.Left,
 	}, self.Page)
-	return Label
 end
 
 function Library.TabMethods:AddButton(text, callback)
@@ -410,9 +725,11 @@ function Library.TabMethods:AddButton(text, callback)
 	return Btn
 end
 
-function Library.TabMethods:AddToggle(text, default, callback)
+-- keybind (optional) lets the toggle also be flipped by a hotkey
+function Library.TabMethods:AddToggle(text, default, callback, keybind)
 	callback = callback or function() end
 	local state = default or false
+	local boundKey = keybind
 
 	local Holder = make("Frame", {
 		BackgroundColor3 = Theme.Surface,
@@ -421,6 +738,8 @@ function Library.TabMethods:AddToggle(text, default, callback)
 	corner(Holder, 8)
 	stroke(Holder, Theme.Stroke, 1)
 
+	local labelRightPad = boundKey ~= nil and 118 or 70
+
 	make("TextLabel", {
 		Text = text,
 		Font = Theme.Font,
@@ -428,7 +747,7 @@ function Library.TabMethods:AddToggle(text, default, callback)
 		TextColor3 = Theme.Text,
 		BackgroundTransparency = 1,
 		Position = UDim2.fromOffset(12, 0),
-		Size = UDim2.new(1, -70, 1, 0),
+		Size = UDim2.new(1, -labelRightPad, 1, 0),
 		TextXAlignment = Enum.TextXAlignment.Left,
 	}, Holder)
 
@@ -458,6 +777,25 @@ function Library.TabMethods:AddToggle(text, default, callback)
 		render()
 		callback(state)
 	end)
+
+	if boundKey ~= nil then
+		local capBtn = makeKeyCaptureButton(
+			Holder,
+			UDim2.new(0, 60, 0, 22),
+			boundKey,
+			function(newKey) boundKey = newKey end
+		)
+		capBtn.Position = UDim2.new(1, -110, 0.5, -11)
+
+		UserInputService.InputBegan:Connect(function(input, gameProcessed)
+			if gameProcessed then return end
+			if boundKey and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == boundKey then
+				state = not state
+				render()
+				callback(state)
+			end
+		end)
+	end
 
 	return {
 		Set = function(_, value)
@@ -517,6 +855,7 @@ function Library.TabMethods:AddSlider(text, min, max, default, callback)
 		BackgroundColor3 = Theme.Accent,
 	}, Track)
 	corner(Fill, 3)
+	registerAccent(Fill, "BackgroundColor3")
 
 	local dragging = false
 	local function updateFromX(xPos)
@@ -619,7 +958,7 @@ function Library.TabMethods:AddDropdown(text, options, default, callback)
 		Size = UDim2.new(1, 0, 0, #options * 30),
 		ZIndex = 2,
 	}, Holder)
-	local OptLayout = make("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder}, OptionsFrame)
+	make("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder}, OptionsFrame)
 
 	for i, opt in ipairs(options) do
 		local OptBtn = make("TextButton", {
@@ -663,8 +1002,6 @@ end
 
 function Library.TabMethods:AddKeybind(text, defaultKey, callback)
 	callback = callback or function() end
-	local currentKey = defaultKey
-	local listening = false
 
 	local Holder = make("Frame", {
 		BackgroundColor3 = Theme.Surface,
@@ -684,36 +1021,18 @@ function Library.TabMethods:AddKeybind(text, defaultKey, callback)
 		TextXAlignment = Enum.TextXAlignment.Left,
 	}, Holder)
 
-	local KeyBtn = make("TextButton", {
-		Text = currentKey and currentKey.Name or "None",
-		Font = Theme.Font,
-		TextSize = 12,
-		TextColor3 = Theme.Text,
-		BackgroundColor3 = Theme.SurfaceLight,
-		AutoButtonColor = false,
-		Size = UDim2.fromOffset(90, 26),
-		Position = UDim2.new(1, -100, 0.5, -13),
-	}, Holder)
-	corner(KeyBtn, 6)
-
-	KeyBtn.MouseButton1Click:Connect(function()
-		if listening then return end
-		listening = true
-		KeyBtn.Text = "..."
-		local conn
-		conn = UserInputService.InputBegan:Connect(function(input, gpe)
-			if input.UserInputType == Enum.UserInputType.Keyboard then
-				currentKey = input.KeyCode
-				KeyBtn.Text = currentKey.Name
-				listening = false
-				conn:Disconnect()
-			end
-		end)
-	end)
+	local currentKey = defaultKey
+	local capBtn = makeKeyCaptureButton(
+		Holder,
+		UDim2.fromOffset(90, 26),
+		defaultKey,
+		function(newKey) currentKey = newKey end
+	)
+	capBtn.Position = UDim2.new(1, -100, 0.5, -13)
 
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
-		if gameProcessed or listening then return end
-		if currentKey and input.KeyCode == currentKey then
+		if gameProcessed then return end
+		if currentKey and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == currentKey then
 			callback(currentKey)
 		end
 	end)
@@ -757,10 +1076,17 @@ function Library:Notify(title, text, duration)
 		BackgroundTransparency = 1,
 	}, holder)
 	corner(Notif, 8)
+	local accentBar = make("Frame", {
+		Size = UDim2.new(0, 3, 1, 0),
+		BackgroundColor3 = Theme.Accent,
+		BorderSizePixel = 0,
+	}, Notif)
+	corner(accentBar, 2)
+	registerAccent(accentBar, "BackgroundColor3")
 	stroke(Notif, Theme.Stroke, 1)
 	padding(Notif, 12)
 
-	local Layout = make("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, Notif)
+	make("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, Notif)
 
 	local TitleLbl = make("TextLabel", {
 		Text = title,
